@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- The above 3 meta tags *must* come first in the head; any other head content must come *after* these tags -->
+  <title>Test Video Calls</title>
+
+  <!-- Bootstrap -->
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap.min.css"
+    integrity="sha384-HSMxcRTRxnN+Bdg0JdbxYKrThecOKuH5zCYotlSAcp1+c8xmyTe9GYg1l9a69psu" crossorigin="anonymous">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/2.2.0/socket.io.dev.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.4.1/jquery.min.js"></script>
+
+  <style>
+    div.relative {
+      position: relative;
+      width: 400px;
+    }
+
+    div.absolute {
+      position: absolute;
+      bottom: 2px;
+      right: 0;
+      width: 200px;
+      border: 3px solid #73AD21;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container" style="width: 500px;">
+    <h1>Test Video calls</h1>
+    <span id="incomming">&nbsp;</span>
+    <form id="login">
+      <div class="row form-group">
+        <div class=" col-md-4">Phone Number:</div>
+        <div class="col-md-6"><input class="form-control" type="text" id="uuid" /><br /></div>
+      </div>
+      <div class="row">
+        <div class="col-md-4">User Name:</div>
+        <div class="col-md-6"><input class="form-control" type="text" id="username" /></div>
+      </div>
+      <div class="row form-group">
+        <div class="col-md-10 text-right">
+          <button class="btn btn-default">Register</button>
+        </div>
+      </div>
+    </form>
+    <hr />
+    <form id="callPeer">
+      <div class='row'>
+        <div class="col-md-4">Remote User Number</div>
+        <div class="col-md-6"><input class="form-control" type="text" id="peernumber" /></div>
+        <div class="col-md-10 text-right"><button class='btn btn-default'>Dial</button></div>
+      </div>
+    </form>
+    <br />
+    <div>
+      <div class="relative">
+        <video id="remote" width="100%" autoplay></video>
+        <div class="absolute">
+          <video width="100%" id="local" autoplay></video>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+    let localVideo = document.getElementById('local');
+    let remoteVideo = document.getElementById('remote');
+    let socketURL = window.location.hostname + ":3030";
+    let socket = io.connect();
+
+    let $login = $('#login');
+    let $uuid = $('#uuid');
+    let $username = $('#username');
+    let $callPeer = $('#callPeer');
+    let $peernumber = $('#peernumber');
+    let $incomming = $('#incomming');
+
+    let selfInit = false;
+
+    const constraints = { audio: true, video: true };
+
+    const configuration = { iceServers: [{ urls: "stun:stun.services.mozilla.com" }] };
+    var mediaConstraints = {
+      optional: [{ RtpDataChannels: true }]
+    };
+
+    var RTCPeerConnection = window.RTCPeerConnection || window.mozRTCPeerConnection || window.webkitRTCPeerConnection;
+    var useWebKit = !!window.webkitRTCPeerConnection;
+
+    if (!RTCPeerConnection) {
+      var win = iframe.contentWindow;
+      RTCPeerConnection = win.RTCPeerConnection || win.mozRTCPeerConnection || win.webkitRTCPeerConnection;
+      useWebKit = !!win.webkitRTCPeerConnection;
+    }
+
+    const pc = new RTCPeerConnection(configuration, mediaConstraints);
+    pc.onicecandidate = ({ candidate }) => socket.emit('onice', { candidate });
+    pc.onnegotiationneeded = async () => {
+      try {
+        console.log('offer');
+        if (!selfInit) {
+          await pc.setLocalDescription(await pc.createOffer());
+          socket.emit('desc', { desc: pc.localDescription });
+        }
+        selfInit = false;
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    pc.ontrack = (event) => {
+      if (remoteVideo.srcObject) return;
+      remoteVideo.srcObject = event.streams[0];
+      console.log('Final');
+    };
+
+    navigator.getUserMedia = navigator.getUserMedia ||
+      navigator.webkitGetUserMedia ||
+      navigator.mozGetUserMedia;
+
+    async function start() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+        localVideo.srcObject = stream;
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    $login.submit((e) => {
+      e.preventDefault();
+      socket.emit('login', { id: $uuid.val(), name: $username.val() });
+    })
+
+    $callPeer.submit(e => {
+      e.preventDefault();
+      selfInit = true;
+      start();
+      socket.emit('call', $peernumber.val());
+    })
+
+    socket.on('connect', () => console.log('connected'));
+    socket.on('registered', (data) => console.log(data));
+    socket.on('calling', data => {
+      $incomming.html('Incomming call from ' + data.name + '(' + data.number + ')');
+      start();
+    });
+
+    socket.on('desc', async data => {
+      if (data.desc.type === 'offer') {
+        await pc.setRemoteDescription(data.desc);
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+        await pc.setLocalDescription(await pc.createAnswer());
+        socket.emit('desc', { desc: pc.localDescription });
+      } else if (data.desc.type === 'answer') {
+        await pc.setRemoteDescription(data.desc);
+      } else {
+        console.log('Unsupported SDP type.');
+      }
+    });
+
+    socket.on('candidate', candidate => {
+      console.log('Candiate', candidate.candidate);
+      if (candidate.candidate == null) return;
+      pc.addIceCandidate(candidate.candidate);
+    });
+
+    socket.on('ringing', () => {
+      console.log('ringing');
+    })
+  </script>
+
+  <!-- jQuery (necessary for Bootstrap's JavaScript plugins) -->
+  <script src="https://code.jquery.com/jquery-1.12.4.min.js"
+    integrity="sha384-nvAa0+6Qg9clwYCGGPpDQLVpLNn0fRaROjHqs13t4Ggj3Ez50XnGQqc/r8MhnRDZ"
+    crossorigin="anonymous"></script>
+  <!-- Include all compiled plugins (below), or include individual files as needed -->
+  <script src="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js"
+    integrity="sha384-aJ21OjlMXNL5UyIl/XNwTMqvzeRMZH2w8c5cRVpzpU8Y5bApTppSuUkhZXN0VxHd"
+    crossorigin="anonymous"></script>
+</body>
+
+</html>
